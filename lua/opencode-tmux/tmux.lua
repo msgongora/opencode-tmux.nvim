@@ -115,7 +115,7 @@ function M.auto_toggle(pane_id)
 			vim.system({ "tmux", "new-session", "-d", "-s", "__opencode_stash" }):wait()
 		end
 
-		-- Use tmux break-pane to move pane to the stash session
+		-- Run tmux break-pane to move pane to the stash session
 		local hidden_pane = system.run({ "tmux", "break-pane", "-d", "-P", "-s", pane_id, "-t", "__opencode_stash" })
 		if hidden_pane ~= "" then
 			state.hidden_pane_spec = hidden_pane
@@ -129,6 +129,7 @@ function M.auto_toggle(pane_id)
 		table.insert(args, "-s")
 		table.insert(args, state.hidden_pane_spec)
 
+		-- Run tmux join-pane to restore the pane
 		local joined = vim.system(args, { text = true }):wait()
 
 		if joined.code == 0 then
