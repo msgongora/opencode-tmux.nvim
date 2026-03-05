@@ -98,11 +98,13 @@ function M.stop()
 	end
 end
 
-local function clean_up_stash_session()
-	state.hidden_pane_spec = nil
-	local remaining = vim.system({ "tmux", "list-panes", "-t", "__opencode_stash" }):wait()
-	if remaining.code ~= 0 then
-		vim.system({ "tmux", "kill-session", "-t", "__opencode_stash" }):wait()
+function M.clean_up_stash_session()
+	if state.hidden_pane_spec then
+		state.hidden_pane_spec = nil
+		local remaining = vim.system({ "tmux", "list-panes", "-t", "__opencode_stash" }):wait(1000)
+		if remaining.code ~= 0 then
+			vim.system({ "tmux", "kill-session", "-t", "__opencode_stash" }):wait(1000)
+		end
 	end
 end
 
@@ -133,7 +135,7 @@ function M.auto_toggle(pane_id)
 		local joined = vim.system(args, { text = true }):wait()
 
 		if joined.code == 0 then
-			clean_up_stash_session()
+			M.clean_up_stash_session()
 		else
 			system.notify("failed to restore tmux pane", vim.log.levels.ERROR)
 			return
@@ -152,7 +154,7 @@ function M.toggle()
 		end
 	else
 		-- Clear hidden_pane_spec if the pane no longer exists
-		clean_up_stash_session()
+		M.clean_up_stash_session()
 		M.start()
 	end
 end
