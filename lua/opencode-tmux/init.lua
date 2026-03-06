@@ -2,6 +2,7 @@ local state = require("opencode-tmux.state")
 local tmux = require("opencode-tmux.tmux")
 local patch = require("opencode-tmux.patch")
 local config = require("opencode-tmux.config")
+local system = require("opencode-tmux.system")
 
 local M = {}
 
@@ -32,6 +33,16 @@ function M.setup(opts)
 	opencode_config.opts.server.toggle = tmux.toggle
 
 	patch.apply()
+
+	-- Kill stash session when nvim exits
+	vim.api.nvim_create_autocmd("VimLeavePre", {
+		callback = function()
+			if not state.opts.auto_close and state.hidden_pane_spec and system.in_tmux() then
+				vim.system({ "tmux", "kill-pane", "-t", state.hidden_pane_spec }):wait(1000)
+				tmux.clean_up_stash_session()
+			end
+		end,
+	})
 end
 
 return M

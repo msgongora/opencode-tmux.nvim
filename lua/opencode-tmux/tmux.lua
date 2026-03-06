@@ -45,6 +45,21 @@ local function build_cmd()
 	return cmd
 end
 
+---@return string[]
+local function get_user_options_args()
+	local args = {}
+
+	if not state.opts.focus then
+		table.insert(args, "-d")
+	end
+	if state.opts.options and state.opts.options ~= "" then
+		for _, token in ipairs(vim.split(state.opts.options, "%s+", { trimempty = true })) do
+			table.insert(args, token)
+		end
+	end
+	return args
+end
+
 function M.start()
 	if not system.in_tmux() then
 		system.notify("tmux not available", vim.log.levels.WARN)
@@ -56,14 +71,8 @@ function M.start()
 	end
 
 	local args = { "tmux", "split-window" }
-	if not state.opts.focus then
-		table.insert(args, "-d")
-	end
-	if state.opts.options and state.opts.options ~= "" then
-		for _, token in ipairs(vim.split(state.opts.options, "%s+", { trimempty = true })) do
-			table.insert(args, token)
-		end
-	end
+	vim.list_extend(args, get_user_options_args())
+
 	table.insert(args, "-P")
 	table.insert(args, "-F")
 	table.insert(args, "#{pane_id}")
@@ -89,10 +98,64 @@ function M.stop()
 	end
 end
 
+function M.clean_up_stash_session()
+	if state.hidden_pane_spec then
+		state.hidden_pane_spec = nil
+		local remaining = vim.system({ "tmux", "list-panes", "-t", "__opencode_stash" }):wait(1000)
+		if remaining.code ~= 0 then
+			vim.system({ "tmux", "kill-session", "-t", "__opencode_stash" }):wait(1000)
+		end
+	end
+end
+
+---@param pane_id string
+function M.auto_toggle(pane_id)
+	if not state.hidden_pane_spec then -- Hide pane
+		-- Check if stash session exists
+		local session_exists = vim.system({ "tmux", "has-session", "-t", "__opencode_stash" }):wait().code == 0
+		-- Create stash session if it doesn't exist
+		if not session_exists then
+			vim.system({ "tmux", "new-session", "-d", "-s", "__opencode_stash" }):wait()
+		end
+
+		-- Run tmux break-pane to move pane to the stash session
+		local hidden_pane = system.run({ "tmux", "break-pane", "-d", "-P", "-s", pane_id, "-t", "__opencode_stash" })
+		if hidden_pane ~= "" then
+			state.hidden_pane_spec = hidden_pane
+		else
+			system.notify("failed to break tmux pane", vim.log.levels.ERROR)
+		end
+	else -- Show pane
+		local args = { "tmux", "join-pane" }
+		vim.list_extend(args, get_user_options_args())
+
+		table.insert(args, "-s")
+		table.insert(args, state.hidden_pane_spec)
+
+		-- Run tmux join-pane to restore the pane
+		local joined = vim.system(args, { text = true }):wait()
+
+		if joined.code == 0 then
+			M.clean_up_stash_session()
+		else
+			system.notify("failed to restore tmux pane", vim.log.levels.ERROR)
+			return
+		end
+	end
+end
+
 function M.toggle()
-	if M.get_managed_pane_id() then
-		M.stop()
+	local pane_id = M.get_managed_pane_id()
+
+	if pane_id then
+		if state.opts.auto_close ~= false then
+			M.stop()
+		else
+			M.auto_toggle(pane_id)
+		end
 	else
+		-- Clear hidden_pane_spec if the pane no longer exists
+		M.clean_up_stash_session()
 		M.start()
 	end
 end
