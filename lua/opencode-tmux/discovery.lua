@@ -152,16 +152,22 @@ function M.sibling_ports()
 	local seen = {}
 	local ports = {}
 
-	local process_lines = system.run_lines({ "ps", "-eo", "pid=,tty=,comm=" })
+	local process_lines = system.run_lines({ "ps", "-eo", "pid=,tty=,args=" })
 	for _, process in ipairs(process_lines) do
-		local pid, tty, comm = process:match("^%s*(%d+)%s+(%S+)%s+(.+)$")
-		if pid and tty and comm and comm:find("opencode", 1, true) and tty ~= "??" then
+		local pid, tty, args = process:match("^%s*(%d+)%s+(%S+)%s+(.+)$")
+		if pid and tty and args and args:find("opencode", 1, true) and tty ~= "??" then
 			local pane_loc = tty_to_tmux[tty]
 			if
 				pane_loc
 				and pane_loc:find(current_window .. ".", 1, true) == 1
 				and pane_to_tmux[current_pane] ~= pane_loc
 			then
+				local parsed_port = parse_target_port_from_args(args)
+				if parsed_port and not seen[parsed_port] then
+					seen[parsed_port] = true
+					table.insert(ports, parsed_port)
+				end
+
 				local lsof_lines =
 					system.run_lines({ "lsof", "-w", "-iTCP", "-sTCP:LISTEN", "-P", "-n", "-a", "-p", pid })
 				for _, lsof_line in ipairs(lsof_lines) do

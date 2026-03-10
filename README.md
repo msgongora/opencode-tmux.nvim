@@ -44,6 +44,7 @@ Use `lazy.nvim` and load this plugin as a dependency of `opencode.nvim`:
 | `allow_passthrough` | `boolean` | `false` | When `false`, explicitly sets `allow-passthrough off` on the pane, fixing some escape sequence leak issues (see [here](https://github.com/nickjvandyke/opencode.nvim/pull/144) for more details). When `true`, inherits the tmux default. |
 | `find_sibling` | `boolean` | `true` | Discover opencode servers in sibling tmux panes (same window). Enables the sibling-first connection priority. |
 | `auto_close` | `boolean` | `false` | Controls toggle/stop behavior. See [Toggle behavior](#toggle-behavior). |
+| `debug` | `boolean` | `false` | Enable debug notifications for sibling detection, session matching, and fallback decisions. |
 
 
 ## Sibling discovery
@@ -51,6 +52,7 @@ Use `lazy.nvim` and load this plugin as a dependency of `opencode.nvim`:
 When `find_sibling = true`, the plugin scans all panes in the current tmux window for running opencode processes and resolves their listening ports. This means:
 
 - If you already have opencode running in another pane, `opencode.nvim` will connect to it automatically instead of spawning a new one.
+- If no sibling pane server is found, it starts a new tmux-managed split (when launching is allowed) instead of attaching to unrelated background servers.
 - `server.get_all` merges both the standard server list and any discovered siblings.
 - `server.get` tries siblings first. If there's exactly one, it connects directly. If there are multiple, it shows a selection UI.
 
@@ -81,4 +83,3 @@ Toggling **kills** the pane and the opencode process. Each toggle on creates a f
 | Toggle (pane visible) | Pane is killed |
 | Toggle (no pane) | New pane is created via `start` |
 | `stop` | Pane is killed |
-

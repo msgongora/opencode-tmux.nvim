@@ -1,5 +1,11 @@
 local M = {}
 
+--- @return boolean
+local function debug_enabled()
+	local ok, state = pcall(require, "opencode-tmux.state")
+	return ok and state.opts and state.opts.debug == true
+end
+
 ---@return boolean
 function M.in_tmux()
 	return vim.fn.executable("tmux") == 1 and vim.env.TMUX ~= nil
@@ -29,6 +35,14 @@ end
 ---@param level? integer
 function M.notify(message, level)
 	vim.notify("opencode-tmux: " .. message, level or vim.log.levels.INFO, { title = "opencode" })
+end
+
+---@param message string
+function M.debug(message)
+	if not debug_enabled() then
+		return
+	end
+	M.notify(message, vim.log.levels.DEBUG)
 end
 
 return M

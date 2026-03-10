@@ -8,6 +8,7 @@ local M = {}
 ---@field allow_passthrough? boolean
 ---@field auto_close? boolean
 ---@field find_sibling? boolean
+---@field debug? boolean
 
 ---@type opencode_tmux.Opts
 M.defaults = {
@@ -18,6 +19,7 @@ M.defaults = {
 	allow_passthrough = false,
 	auto_close = false,
 	find_sibling = true,
+	debug = false,
 }
 
 ---@type opencode_tmux.Opts

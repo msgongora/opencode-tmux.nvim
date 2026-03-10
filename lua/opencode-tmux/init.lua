@@ -14,6 +14,7 @@ local M = {}
 ---@field allow_passthrough? boolean
 ---@field auto_close? boolean
 ---@field find_sibling? boolean
+---@field debug? boolean
 
 ---@param opts? opencode_tmux.Opts
 function M.setup(opts)
