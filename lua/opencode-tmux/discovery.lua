@@ -4,10 +4,43 @@ local tmux = require("opencode-tmux.tmux")
 
 local M = {}
 
+---@param name string
+---@param args table|nil
+local function debug_call(name, args)
+	system.debug("call discovery." .. name .. " args=" .. vim.inspect(args or {}))
+end
+
 ---@param args string
 ---@return string|nil
 local function parse_dir_from_args(args)
+	debug_call("parse_dir_from_args", { args = args })
 	return args:match("%-%-dir=([^%s]+)") or args:match("%-%-dir%s+([^%s]+)")
+end
+
+---Query the server for the most recently updated session in the given directory (synchronous).
+---@param port number
+---@param directory string
+---@return opencode.cli.client.Session|nil
+local function get_session_for_dir_sync(port, directory)
+	debug_call("get_session_for_dir_sync", { port = port, directory = directory })
+	local encoded = directory:gsub("([^%w%-_%.~/])", function(c)
+		return string.format("%%%02X", string.byte(c))
+	end)
+	local path = "/session?directory=" .. encoded .. "&limit=1"
+	local result = vim.system({
+		"curl", "-s", "-X", "GET",
+		"-H", "Accept: application/json",
+		"--max-time", "2",
+		"http://localhost:" .. tostring(port) .. path,
+	}, { text = true }):wait()
+	if result.code ~= 0 or not result.stdout or result.stdout == "" then
+		return nil
+	end
+	local ok, sessions = pcall(vim.fn.json_decode, result.stdout)
+	if ok and type(sessions) == "table" and #sessions > 0 then
+		return sessions[1]
+	end
+	return nil
 end
 
 ---Query the server for the most recently updated session in the given directory.
@@ -16,6 +49,7 @@ end
 ---@param directory string
 ---@param callback fun(session: opencode.cli.client.Session|nil)
 local function get_session_for_dir(port, directory, callback)
+	debug_call("get_session_for_dir", { port = port, directory = directory })
 	local encoded = directory:gsub("([^%w%-_%.~/])", function(c)
 		return string.format("%%%02X", string.byte(c))
 	end)
@@ -59,6 +93,7 @@ end
 ---@param server_cwd string
 ---@return string
 local function get_client_dir_for_port(port, server_cwd)
+	debug_call("get_client_dir_for_port", { port = port, server_cwd = server_cwd })
 	local process_lines = system.run_lines({ "ps", "-eo", "pid=,args=" })
 	for _, process in ipairs(process_lines) do
 		local _, args = process:match("^%s*(%d+)%s+(.+)$")
@@ -78,6 +113,7 @@ end
 ---@param args string
 ---@return number|nil
 local function parse_target_port_from_args(args)
+	debug_call("parse_target_port_from_args", { args = args })
 	local attach_port = args:match("%-%-attach=.-:(%d+)")
 		or args:match("%-%-attach%s+.-:(%d+)")
 		or args:match("attach%s+.-:(%d+)")
@@ -98,6 +134,7 @@ end
 ---@param port number
 ---@return boolean
 local function process_matches_port(pid, args, port)
+	debug_call("process_matches_port", { pid = pid, args = args, port = port })
 	local parsed_port = parse_target_port_from_args(args)
 	if parsed_port then
 		return parsed_port == port
@@ -116,6 +153,7 @@ end
 
 ---@return number[]
 function M.sibling_ports()
+	debug_call("sibling_ports", nil)
 	if not system.in_tmux() or state.opts.find_sibling ~= true then
 		return {}
 	end
@@ -191,6 +229,7 @@ end
 ---@param port number
 ---@return table[]
 local function sibling_candidates_for_port(port)
+	debug_call("sibling_candidates_for_port", { port = port })
 	local current_pane = tmux.current_pane_id()
 	if not current_pane then return {} end
 
@@ -259,6 +298,7 @@ end
 ---@param pid string
 ---@return string|nil
 local function get_process_cwd(pid)
+	debug_call("get_process_cwd", { pid = pid })
 	local lines = system.run_lines({ "lsof", "-a", "-p", pid, "-d", "cwd", "-Fn" })
 	for _, line in ipairs(lines) do
 		if line:sub(1, 1) == "n" then
@@ -275,27 +315,106 @@ end
 ---Prefers --dir from process args, then process cwd, then fallback_directory.
 ---@param port number
 ---@param fallback_directory string
----@param callback fun(directory: string)
-function M.target_directory_for_port_async(port, fallback_directory, callback)
+---@return string
+function M.target_directory_for_port(port, fallback_directory)
+	debug_call("target_directory_for_port", { port = port, fallback_directory = fallback_directory })
 	if not system.in_tmux() or state.opts.find_sibling ~= true then
-		callback(fallback_directory)
-		return
+		return fallback_directory
 	end
 
 	local candidates = sibling_candidates_for_port(port)
 	for _, candidate in ipairs(candidates) do
 		local dir = parse_dir_from_args(candidate.args) or get_process_cwd(candidate.pid)
 		if dir and dir ~= "" then
-			callback(dir)
-			return
+			return dir
 		end
 	end
-	callback(fallback_directory)
+
+	return fallback_directory
+end
+
+---Resolve the target directory for a sibling opencode client on the given port.
+---Prefers --dir from process args, then process cwd, then fallback_directory.
+---@param port number
+---@param fallback_directory string
+---@param callback fun(directory: string)
+function M.target_directory_for_port_async(port, fallback_directory, callback)
+	debug_call("target_directory_for_port_async", { port = port, fallback_directory = fallback_directory })
+	callback(M.target_directory_for_port(port, fallback_directory))
+end
+
+---Select the most relevant session for a sibling opencode client on this port.
+---Uses the sibling client's directory to find a matching session and selects it in the server.
+---@param port number
+---@param fallback_directory string
+function M.select_session_for_port_async(port, fallback_directory)
+	debug_call("select_session_for_port_async", { port = port, fallback_directory = fallback_directory })
+	if not system.in_tmux() or state.opts.find_sibling ~= true then
+		return
+	end
+
+	M.target_directory_for_port_async(port, fallback_directory, function(directory)
+		if not directory or directory == "" then
+			system.debug("No sibling directory resolved for session selection on port " .. tostring(port))
+			return
+		end
+
+		get_session_for_dir(port, directory, function(session)
+			if not session or not session.id then
+				system.debug(
+					"No matching sibling session found for port "
+						.. tostring(port)
+						.. " directory="
+						.. tostring(directory)
+				)
+				return
+			end
+
+			require("opencode.cli.client").select_session(port, session.id)
+			system.debug(
+				"Selected sibling session"
+					.. " port="
+					.. tostring(port)
+					.. " session="
+					.. tostring(session.id)
+					.. " title="
+					.. tostring(session.title)
+					.. " directory="
+					.. tostring(directory)
+			)
+		end)
+	end)
+end
+
+---Resolve the session ID for the sibling target directory on this port.
+---@param port number
+---@param fallback_directory string
+---@return string|nil session_id
+---@return string|nil directory
+function M.resolve_target_session(port, fallback_directory)
+	debug_call("resolve_target_session", { port = port, fallback_directory = fallback_directory })
+	local directory = M.target_directory_for_port(port, fallback_directory)
+	if not directory or directory == "" then
+		return nil, nil
+	end
+	local session = get_session_for_dir_sync(port, directory)
+	if session and session.id then
+		system.debug(
+			"Resolved target session"
+				.. " port=" .. tostring(port)
+				.. " session=" .. tostring(session.id)
+				.. " title=" .. tostring(session.title)
+				.. " directory=" .. tostring(directory)
+		)
+		return session.id, directory
+	end
+	return nil, directory
 end
 
 ---@param servers opencode.cli.server.Server[]
 ---@return opencode.cli.server.Server[]
 function M.unique_by_port(servers)
+	debug_call("unique_by_port", { server_count = #servers })
 	local unique = {}
 	local seen = {}
 	for _, server_item in ipairs(servers) do
@@ -310,6 +429,7 @@ end
 ---@param port number
 ---@return Promise<opencode.cli.server.Server>
 function M.get_server(port)
+	debug_call("get_server", { port = port })
 	local Promise = require("opencode.promise")
 	local client = require("opencode.cli.client")
 
@@ -358,6 +478,7 @@ end
 ---@param ports number[]
 ---@return Promise<opencode.cli.server.Server[]>
 function M.servers_from_ports(ports)
+	debug_call("servers_from_ports", { ports = ports })
 	local Promise = require("opencode.promise")
 
 	if #ports == 0 then
@@ -384,6 +505,7 @@ end
 
 ---@return Promise<opencode.cli.server.Server[]>
 function M.sibling_servers()
+	debug_call("sibling_servers", nil)
 	return M.servers_from_ports(M.sibling_ports())
 end
 

@@ -4,16 +4,20 @@ Tmux extension for [`opencode.nvim`](https://github.com/NickvanDyke/opencode.nvi
 
 `opencode.nvim` is required. This plugin does not work standalone. When not running inside tmux, it silently no-ops.
 
-It overrides `opencode.nvim`'s server management with tmux-backed implementations:
+It provides tmux-backed server management with sibling-aware patching and helper APIs:
 
 - **tmux-backed `server.start/stop/toggle`** — opens opencode in a tmux split pane
 - **toggle with persist** — when `auto_close = false` (default), toggling hides/restores the pane instead of killing it, preserving your opencode session
 - **sibling-pane discovery** — finds opencode servers running in other panes of the same tmux window
-- **connection priority** — connects to sibling panes first, falls back to default `opencode.nvim` server selection
+- **server/prompt patching** — patches `opencode.cli.server` and prompt routing so built-in `opencode.nvim` flows use sibling-first behavior
+- **session-scoped isolation** — subscribes via `/global/event` and filters by directory + session ID; sends prompts directly via `/session/:id/message` to target the exact attached session
+- **wrapper APIs** — explicit `connect()`, `prompt()`, and `servers()` helpers for direct usage
 
 ## Setup
 
-Use `lazy.nvim` and load this plugin as a dependency of `opencode.nvim`:
+Use `lazy.nvim` and load this plugin as a dependency of `opencode.nvim`.
+
+If you use `connect_keymap`, set `lazy = false` so the mapping is registered at startup:
 
 ```lua
 {
@@ -21,12 +25,15 @@ Use `lazy.nvim` and load this plugin as a dependency of `opencode.nvim`:
   dependencies = {
     {
       "e-cal/opencode-tmux.nvim",
+      lazy = false,
       opts = {
         options = "-h",
         focus = false,
         auto_close = false,
         allow_passthrough = false,
         find_sibling = true,
+        connect_keymap = "<leader>O",
+        connect_launch = false,
       },
     },
   },
@@ -44,17 +51,33 @@ Use `lazy.nvim` and load this plugin as a dependency of `opencode.nvim`:
 | `allow_passthrough` | `boolean` | `false` | When `false`, explicitly sets `allow-passthrough off` on the pane, fixing some escape sequence leak issues (see [here](https://github.com/nickjvandyke/opencode.nvim/pull/144) for more details). When `true`, inherits the tmux default. |
 | `find_sibling` | `boolean` | `true` | Discover opencode servers in sibling tmux panes (same window). Enables the sibling-first connection priority. |
 | `auto_close` | `boolean` | `false` | Controls toggle/stop behavior. See [Toggle behavior](#toggle-behavior). |
-| `debug` | `boolean` | `false` | Enable debug notifications for sibling detection, session matching, and fallback decisions. |
+| `debug` | `boolean` | `false` | Enable debug logging to `/tmp/opencode-tmux-debug.log` (heartbeats ignored). |
+| `connect_keymap` | `string \| false` | `false` | Optional normal-mode keymap for `require("opencode-tmux").connect()`. Example: `"<leader>O"`. |
+| `connect_launch` | `boolean` | `false` | Whether `connect()` should start a new tmux-managed server when no sibling is found. |
+
+## Wrapper APIs
+
+These helpers are exported in addition to the patched default behavior:
+
+```lua
+require("opencode-tmux").connect()
+require("opencode-tmux").prompt("Fix failing tests", { submit = true })
+require("opencode-tmux").servers()
+```
+
+- `connect()` uses `connect_launch` by default.
+- `connect({ launch = true })` overrides the default and allows launching a new tmux-managed server.
+- `prompt()` renders context and posts to the active sibling server TUI endpoints.
+- `servers()` returns discovered sibling servers (unique by port).
 
 
 ## Sibling discovery
 
 When `find_sibling = true`, the plugin scans all panes in the current tmux window for running opencode processes and resolves their listening ports. This means:
 
-- If you already have opencode running in another pane, `opencode.nvim` will connect to it automatically instead of spawning a new one.
-- If no sibling pane server is found, it starts a new tmux-managed split (when launching is allowed) instead of attaching to unrelated background servers.
-- `server.get_all` merges both the standard server list and any discovered siblings.
-- `server.get` tries siblings first. If there's exactly one, it connects directly. If there are multiple, it shows a selection UI.
+- Built-in `opencode.nvim` flows use sibling-first behavior through patched server discovery/routing.
+- `connect()` and `prompt()` can also be called directly for explicit control.
+- If no sibling server is found and launching is enabled, connect starts a tmux-managed split and retries discovery.
 
 ## Toggle behavior
 

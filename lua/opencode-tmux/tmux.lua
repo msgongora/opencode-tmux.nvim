@@ -3,8 +3,15 @@ local system = require("opencode-tmux.system")
 
 local M = {}
 
+---@param name string
+---@param args table|nil
+local function debug_call(name, args)
+	system.debug("call tmux." .. name .. " args=" .. vim.inspect(args or {}))
+end
+
 ---@return string|nil
 local function get_current_pane_id()
+	debug_call("get_current_pane_id", nil)
 	if not system.in_tmux() then
 		return nil
 	end
@@ -18,12 +25,14 @@ end
 ---@param pane_id string
 ---@return boolean
 local function pane_exists(pane_id)
+	debug_call("pane_exists", { pane_id = pane_id })
 	local result = vim.system({ "tmux", "list-panes", "-t", pane_id }, { text = true }):wait()
 	return result.code == 0
 end
 
 ---@return string|nil
 function M.get_managed_pane_id()
+	debug_call("get_managed_pane_id", nil)
 	local pane_id = state.pane_id
 	if not pane_id then
 		return nil
@@ -37,6 +46,7 @@ end
 
 ---@return string
 local function build_cmd()
+	debug_call("build_cmd", nil)
 	local configured = require("opencode.config").opts.server or {}
 	local cmd = state.opts.cmd or "opencode --port"
 	if configured.port and not cmd:match("%-%-port") then
@@ -47,6 +57,7 @@ end
 
 ---@return string[]
 local function get_user_options_args()
+	debug_call("get_user_options_args", nil)
 	local args = {}
 
 	if not state.opts.focus then
@@ -61,6 +72,7 @@ local function get_user_options_args()
 end
 
 function M.start()
+	debug_call("start", nil)
 	if not system.in_tmux() then
 		system.notify("tmux not available", vim.log.levels.WARN)
 		return
@@ -91,6 +103,7 @@ function M.start()
 end
 
 function M.stop()
+	debug_call("stop", nil)
 	local pane_id = M.get_managed_pane_id()
 	if pane_id and state.opts.auto_close ~= false then
 		vim.system({ "tmux", "kill-pane", "-t", pane_id }, { text = true }):wait()
@@ -99,6 +112,7 @@ function M.stop()
 end
 
 function M.clean_up_stash_session()
+	debug_call("clean_up_stash_session", { hidden_pane_spec = state.hidden_pane_spec })
 	if state.hidden_pane_spec then
 		state.hidden_pane_spec = nil
 		local remaining = vim.system({ "tmux", "list-panes", "-t", "__opencode_stash" }):wait(1000)
@@ -110,6 +124,7 @@ end
 
 ---@param pane_id string
 function M.auto_toggle(pane_id)
+	debug_call("auto_toggle", { pane_id = pane_id, hidden_pane_spec = state.hidden_pane_spec })
 	if not state.hidden_pane_spec then -- Hide pane
 		-- Check if stash session exists
 		local session_exists = vim.system({ "tmux", "has-session", "-t", "__opencode_stash" }):wait().code == 0
@@ -145,6 +160,7 @@ function M.auto_toggle(pane_id)
 end
 
 function M.toggle()
+	debug_call("toggle", nil)
 	local pane_id = M.get_managed_pane_id()
 
 	if pane_id then
@@ -162,6 +178,7 @@ end
 
 ---@return string|nil
 function M.current_pane_id()
+	debug_call("current_pane_id", nil)
 	return get_current_pane_id()
 end
 
