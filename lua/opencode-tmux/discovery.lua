@@ -17,16 +17,54 @@ local function parse_dir_from_args(args)
 	return args:match("%-%-dir=([^%s]+)") or args:match("%-%-dir%s+([^%s]+)")
 end
 
+---Parse the opencode session title from a tmux pane title.
+---The opencode TUI sets the pane title to "OC | <session title>".
+---@param pane_title string|nil
+---@return string|nil
+local function parse_session_title_from_pane(pane_title)
+	if not pane_title or pane_title == "" then
+		return nil
+	end
+	local title = pane_title:match("^OC | (.+)$")
+	if title and title ~= "" then
+		return title
+	end
+	return nil
+end
+
+---Find the best matching session from a list, preferring a title hint match.
+---Falls back to the first session (most recently updated) if no title match.
+---@param sessions table[]
+---@param title_hint string|nil
+---@return table|nil
+local function best_session_by_title(sessions, title_hint)
+	if not sessions or #sessions == 0 then
+		return nil
+	end
+	if title_hint then
+		for _, session in ipairs(sessions) do
+			if session.title == title_hint then
+				return session
+			end
+		end
+	end
+	-- Fallback: most recently updated (first in the list)
+	return sessions[1]
+end
+
 ---Query the server for the most recently updated session in the given directory (synchronous).
+---When title_hint is provided, fetches multiple sessions and prefers a title match.
 ---@param port number
 ---@param directory string
+---@param title_hint string|nil
 ---@return opencode.cli.client.Session|nil
-local function get_session_for_dir_sync(port, directory)
-	debug_call("get_session_for_dir_sync", { port = port, directory = directory })
+local function get_session_for_dir_sync(port, directory, title_hint)
+	debug_call("get_session_for_dir_sync", { port = port, directory = directory, title_hint = title_hint })
 	local encoded = directory:gsub("([^%w%-_%.~/])", function(c)
 		return string.format("%%%02X", string.byte(c))
 	end)
-	local path = "/session?directory=" .. encoded .. "&limit=1"
+	local limit = title_hint and 20 or 1
+	local path = "/session?directory=" .. encoded .. "&limit=" .. tostring(limit)
 	local result = vim.system({
 		"curl", "-s", "-X", "GET",
 		"-H", "Accept: application/json",
@@ -38,22 +76,25 @@ local function get_session_for_dir_sync(port, directory)
 	end
 	local ok, sessions = pcall(vim.fn.json_decode, result.stdout)
 	if ok and type(sessions) == "table" and #sessions > 0 then
-		return sessions[1]
+		return best_session_by_title(sessions, title_hint)
 	end
 	return nil
 end
 
 ---Query the server for the most recently updated session in the given directory.
+---When title_hint is provided, fetches multiple sessions and prefers a title match.
 ---Calls callback with the session table, or nil if none found.
 ---@param port number
 ---@param directory string
 ---@param callback fun(session: opencode.cli.client.Session|nil)
-local function get_session_for_dir(port, directory, callback)
-	debug_call("get_session_for_dir", { port = port, directory = directory })
+---@param title_hint string|nil
+local function get_session_for_dir(port, directory, callback, title_hint)
+	debug_call("get_session_for_dir", { port = port, directory = directory, title_hint = title_hint })
 	local encoded = directory:gsub("([^%w%-_%.~/])", function(c)
 		return string.format("%%%02X", string.byte(c))
 	end)
-	local path = "/session?directory=" .. encoded .. "&limit=1"
+	local limit = title_hint and 20 or 1
+	local path = "/session?directory=" .. encoded .. "&limit=" .. tostring(limit)
 	local command = {
 		"curl", "-s", "-X", "GET",
 		"-H", "Accept: application/json",
@@ -79,7 +120,7 @@ local function get_session_for_dir(port, directory, callback)
 			local raw = table.concat(stdout_buf, "")
 			local ok, sessions = pcall(vim.fn.json_decode, raw)
 			if ok and type(sessions) == "table" and #sessions > 0 then
-				vim.schedule(function() callback(sessions[1]) end)
+				vim.schedule(function() callback(best_session_by_title(sessions, title_hint)) end)
 			else
 				vim.schedule(function() callback(nil) end)
 			end
@@ -225,7 +266,7 @@ function M.sibling_ports()
 end
 
 ---Find candidates for a sibling opencode process on the given port within the current tmux window.
----Returns a list sorted by pane proximity, each with pid/tty/args/pane_index.
+---Returns a list sorted by pane proximity, each with pid/tty/args/pane_index/pane_title.
 ---@param port number
 ---@return table[]
 local function sibling_candidates_for_port(port)
@@ -240,28 +281,24 @@ local function sibling_candidates_for_port(port)
 
 	local tty_to_tmux = {}
 	local pane_to_tmux = {}
+	local tty_to_pane_index = {}
+	local tty_to_pane_title = {}
 	local pane_lines = system.run_lines({
 		"tmux", "list-panes", "-a", "-F",
-		"#{pane_id}\t#{pane_tty}\t#{session_name}:#{window_index}.#{pane_index}",
+		"#{pane_id}\t#{pane_tty}\t#{session_name}:#{window_index}.#{pane_index}\t#{pane_title}",
 	})
 	for _, line in ipairs(pane_lines) do
-		local pane_id, pane_tty, pane_loc = line:match("^(%%%d+)\t([^\t]+)\t([^\t]+)$")
+		local pane_id, pane_tty, pane_loc, pane_title = line:match("^(%%%d+)\t([^\t]+)\t([^\t]+)\t(.*)$")
 		if pane_id and pane_tty and pane_loc then
 			local tty = pane_tty:gsub("^/dev/", "")
 			tty_to_tmux[tty] = pane_loc
 			pane_to_tmux[pane_id] = pane_loc
+			tty_to_pane_index[tty] = tonumber(pane_loc:match("%.(%d+)$") or "")
+			tty_to_pane_title[tty] = pane_title or ""
 		end
 	end
 
 	local current_pane_index = tonumber(current_loc:match("%.(%d+)$") or "") or 0
-	local tty_to_pane_index = {}
-	for _, line in ipairs(pane_lines) do
-		local _, pane_tty, pane_loc = line:match("^(%%%d+)\t([^\t]+)\t([^\t]+)$")
-		if pane_tty and pane_loc then
-			local tty = pane_tty:gsub("^/dev/", "")
-			tty_to_pane_index[tty] = tonumber(pane_loc:match("%.(%d+)$") or "")
-		end
-	end
 
 	local candidates = {}
 	local process_lines = system.run_lines({ "ps", "-eo", "pid=,tty=,args=" })
@@ -279,6 +316,7 @@ local function sibling_candidates_for_port(port)
 						tty = tty,
 						args = args,
 						pane_index = tty_to_pane_index[tty] or 0,
+						pane_title = tty_to_pane_title[tty] or "",
 					})
 				end
 			end
@@ -293,6 +331,26 @@ local function sibling_candidates_for_port(port)
 	end)
 
 	return candidates
+end
+
+---Get the opencode session title from the closest sibling pane running opencode on this port.
+---Parses the tmux pane title (format "OC | <session title>") of the first candidate.
+---@param port number
+---@return string|nil
+local function sibling_pane_session_title(port)
+	debug_call("sibling_pane_session_title", { port = port })
+	if not system.in_tmux() or state.opts.find_sibling ~= true then
+		return nil
+	end
+	local candidates = sibling_candidates_for_port(port)
+	for _, candidate in ipairs(candidates) do
+		local title = parse_session_title_from_pane(candidate.pane_title)
+		if title then
+			system.debug("Found sibling pane session title=" .. title .. " pane_title=" .. candidate.pane_title)
+			return title
+		end
+	end
+	return nil
 end
 
 ---@param pid string
@@ -344,7 +402,7 @@ function M.target_directory_for_port_async(port, fallback_directory, callback)
 end
 
 ---Select the most relevant session for a sibling opencode client on this port.
----Uses the sibling client's directory to find a matching session and selects it in the server.
+---Uses the sibling client's directory and pane title to find a matching session and selects it in the server.
 ---@param port number
 ---@param fallback_directory string
 function M.select_session_for_port_async(port, fallback_directory)
@@ -352,6 +410,8 @@ function M.select_session_for_port_async(port, fallback_directory)
 	if not system.in_tmux() or state.opts.find_sibling ~= true then
 		return
 	end
+
+	local title_hint = sibling_pane_session_title(port)
 
 	M.target_directory_for_port_async(port, fallback_directory, function(directory)
 		if not directory or directory == "" then
@@ -366,6 +426,8 @@ function M.select_session_for_port_async(port, fallback_directory)
 						.. tostring(port)
 						.. " directory="
 						.. tostring(directory)
+						.. " title_hint="
+						.. tostring(title_hint)
 				)
 				return
 			end
@@ -382,11 +444,12 @@ function M.select_session_for_port_async(port, fallback_directory)
 					.. " directory="
 					.. tostring(directory)
 			)
-		end)
+		end, title_hint)
 	end)
 end
 
 ---Resolve the session ID for the sibling target directory on this port.
+---Uses the sibling pane title to prefer the session the TUI is actually viewing.
 ---@param port number
 ---@param fallback_directory string
 ---@return string|nil session_id
@@ -397,7 +460,8 @@ function M.resolve_target_session(port, fallback_directory)
 	if not directory or directory == "" then
 		return nil, nil
 	end
-	local session = get_session_for_dir_sync(port, directory)
+	local title_hint = sibling_pane_session_title(port)
+	local session = get_session_for_dir_sync(port, directory, title_hint)
 	if session and session.id then
 		system.debug(
 			"Resolved target session"
@@ -405,6 +469,7 @@ function M.resolve_target_session(port, fallback_directory)
 				.. " session=" .. tostring(session.id)
 				.. " title=" .. tostring(session.title)
 				.. " directory=" .. tostring(directory)
+				.. " title_hint=" .. tostring(title_hint)
 		)
 		return session.id, directory
 	end
@@ -433,6 +498,8 @@ function M.get_server(port)
 	local Promise = require("opencode.promise")
 	local client = require("opencode.cli.client")
 
+	local title_hint = sibling_pane_session_title(port)
+
 	return Promise.new(function(resolve, reject)
 		client.get_path(port, function(path)
 			local cwd = path.directory or path.worktree
@@ -453,7 +520,7 @@ function M.get_server(port)
 					get_session_for_dir(port, client_dir, function(session)
 						local title = session and session.title or "<No sessions>"
 						resolve(title)
-					end)
+					end, title_hint)
 				end),
 				Promise.new(function(resolve)
 					client.get_agents(port, function(agents)

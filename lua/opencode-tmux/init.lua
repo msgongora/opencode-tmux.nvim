@@ -16,8 +16,14 @@ end
 ---@param server_item opencode.cli.server.Server
 local function notify_connected(server_item)
 	local port = server_item and server_item.port or "?"
-	local cwd = server_item and server_item.cwd or "<unknown>"
-	vim.notify("Connected to server: " .. tostring(cwd) .. " (port " .. tostring(port) .. ")")
+	local title = server_item and server_item.title or nil
+	if not title or title == "" or title == "<No sessions>" then
+		title = state.sse_target_session_id_by_port[port]
+	end
+	if not title or title == "" then
+		title = server_item and server_item.cwd or "<unknown>"
+	end
+	vim.notify("Connected to session: " .. tostring(title) .. " (port " .. tostring(port) .. ")")
 end
 
 ---@param value any
@@ -279,6 +285,16 @@ function M.setup(opts)
 				local filepath = find_path_like_value(event and event.properties)
 					or find_path_like_value(event)
 					or "<unknown>"
+				local port = args and args.data and args.data.port or nil
+				local base_dir = port and state.sse_target_directory_by_port[port] or nil
+				if type(base_dir) == "string" and base_dir ~= "" then
+					local prefix = base_dir:gsub("/$", "") .. "/"
+					if type(filepath) == "string" and filepath:sub(1, #prefix) == prefix then
+						filepath = filepath:sub(#prefix + 1)
+					elseif filepath == base_dir then
+						filepath = "."
+					end
+				end
 				vim.notify("opencode-tmux: file.edited: " .. tostring(filepath), vim.log.levels.INFO, {
 					title = "opencode",
 				})
